@@ -172,6 +172,23 @@ block, same `1..6` question headers, same `Total (60%)`); the only distinguishin
 anywhere in the corpus is the word in the filename. Content-based role detection is
 therefore impossible, and slot-based assignment removes the problem entirely.
 
+**Auto-routing** (§10) still has to guess a slot when 18 files land in one pile, so it
+uses, in order:
+
+1. **Content shape**, which settles three roles outright — continuous-assessment sheets
+   announce themselves with Attendance/Assignment/Mid-Semester columns, vivas have only a
+   total, thesis reports name their components. Shape outranks the file name on purpose:
+   `MIS 3203 1st Continous.xls` contains both role keywords and is in fact the continuous
+   sheet, and a naive scan would file a continuous assessment as a 1st-setter paper.
+2. **File name** for the two roles shape cannot separate.
+3. **Elimination**, for files that are silent on both — `MIS 3201 Final.xlsx` and
+   `MIS 3103 Final.xlsx` name no role, and take whichever compatible slot is left once the
+   confident files have claimed theirs. Confident files are placed first, in two passes.
+
+Course code resolves before role: the **file name wins whenever it names a course in the
+batch**, contents break the tie only when the file name names nothing. All 18 fixtures
+route correctly under this rule, including the three whose name and contents disagree.
+
 #### The three roles, proven
 
 Verified against the golden workbook: **22 file→role assignments, 1,066 field comparisons,
@@ -190,7 +207,7 @@ columns. Two real defects make this mandatory:
 
 | Defect | Consequence if trusted |
 |---|---|
-| `MIS 3206 1st setter.xls` and `MIS 3206 2nd setter.xlsx` total with `=SUM(C:G)` — omits question 6 | every MIS 3206 total under-reported |
+| `MIS 3206` setters total with `=SUM(C:G)`, omitting question 6 | harmless *here* — question 6 is blank for every student so the omission changes nothing, and recomputation still reconciles. The same formula on a batch with a real question 6 would under-report every total, so recomputation stays mandatory. |
 | `MIS 3103 Final.xlsx` column `P` is `=SUM(B:O)` | **exactly 2× the true total** on all 51 cached rows; blank on 2 more |
 
 When our recomputed total disagrees with the file's stated total, emit a warning naming
@@ -285,13 +302,20 @@ SGPA = ROUND( SUM(GP * credit) / SUM(credit), 2 )
 
 ### Blank semantics
 
-A blank source cell is **written as blank**; the computed chain treats it as `0`. This
-exactly reproduces `output demo.xls`, where student `12022062` has blank `F1_01`/`F2_01`,
-an explicit `AVG_01` of `0.0`, `GT_01` of 4.0 (CA-only) and `LG_01` of `F`.
+A blank source cell is **written as blank**; the computed chain treats it as `0`.
 
 A blank `F1` must **never** become a fabricated average. Under the hard block (§9) this
-cannot arise for a missing *file*, but it can for a missing *cell*, and the chain must
-degrade the way the original workbook does — not invent a pass.
+cannot arise for a missing *file*, but it can for a missing *cell* — a student present in
+the continuous sheet and absent from a setter sheet — and the chain must degrade to
+`AVG = 0`, `GT = ST` rather than invent a pass.
+
+> **Corrected during implementation.** This rule was originally justified with a worked
+> example (`12022062`, SGPA 0.46) attributed to `output demo.xls`. That example is **not
+> present in the corpus** — no student in either reference workbook has a blank setter
+> cell, and none has an `F`. The *rule* is correct and is covered by synthetic tests, but
+> it is defensive behaviour, not a description of a real past batch. The verified facts
+> are narrower: `EC = GP × credit` holds for every cell, and `sum(EC) / 18` reproduces all
+> 53 SGPAs exactly.
 
 ### SGPA denominator
 
@@ -398,9 +422,13 @@ evolution of `output demo.xls`), and `output demo.xls` for anything the golden l
 
 ### 8.5 Grade legend table
 
-Below the data, at **header row = last data row + 8**. Reproduces the
-`Marks | GP | … | LG` band table so the department can audit the scale against the file.
-11 rows (1 header + 10 bands) across a 5-column footprint, values in columns 1, 2 and 5.
+Below the data, header row seven rows under the last student (Excel row 61 for a
+53-student batch), anchored to the **first course's `AVG_` column** — column M in the
+current 3,2 sheet, column L in `output demo.xls`, the one-column difference being the
+`SL No` those workbooks added.
+
+Bands run **ascending**, `0/F` through `80/A+`: 11 rows (1 header + 10 bands) across a
+5-column footprint, values in columns 1, 2 and 5, with `Marks` and `GP` numeric.
 
 ### 8.6 Conditional formatting
 
@@ -492,12 +520,21 @@ courses. That workbook is the department's own output for this exact batch and m
 the published DOCX across 3,869 comparisons with 7 discrepancies, all IEEE-754 display
 artefacts on `ST_01`.
 
-Two adjustments, both deliberate:
+Adjustments, all deliberate and all enumerated in `test/golden.test.js` so an allowlist
+cannot quietly absorb a regression elsewhere:
 
 1. **Match by Student Id, not by row position.** The golden file appends 4 earlier-session
-   students at rows 51–54; pure ascending order places them first. Row order will differ;
-   every value is identical.
-2. **Allowlist the conditional-format range difference** (§8.6).
+   students at rows 50–53; ascending order places them first. `SL No` therefore differs for
+   every row. Every other value is identical.
+2. **`12222062`'s Session.** The `.xls` says `2021-2022`; the published transcript says
+   `2022-2023`. We follow the transcript.
+3. **Allowlist the conditional-format range difference** (§8.6).
+
+Result: **3,869 mark cells compared, 0 differences**, verified both in the test suite and
+against a file downloaded from the running app.
+
+The golden workbook's suffixes are ordinal (`CA_01`…`CA_06`); ours carry real course codes.
+Layout is identical, so columns are matched positionally.
 
 All 53 students are reproducible from source. The two Word files are converted to Excel
 and verified against the golden file before use.
@@ -537,7 +574,7 @@ Every one of these is handled, and each has a dedicated test.
 | 6 | Every file carries a stray `Sheet1` course-credit table | excluded by shape |
 | 7 | Header row position drifts across rows 5, 7, 9, 10 | located by scan |
 | 8 | Two files have Bengali headers (one has the wrong department in its title) | `আইডি নম্বর` matches the ID alias list; department line is ignored |
-| 9 | `MIS 3206` files total with `=SUM(C:G)`, omitting question 6 | recompute, never trust |
+| 9 | `MIS 3206` files total with `=SUM(C:G)`, omitting question 6 | recompute, never trust; question 6 is blank for all 53 so the stated total still reconciles |
 | 10 | `Continuous MIS 3206.xlsx` has a second sheet of MID-2 marks | shape selection |
 
 ---
